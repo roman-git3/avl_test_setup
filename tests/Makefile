@@ -4,9 +4,10 @@ TOPLEVEL_LANG ?= verilog
 
 # Paths to your source files
 VERILOG_SOURCES += $(PWD)/../hdl/my_design.sv
+VERILOG_SOURCES += $(PWD)/../hdl/top_tb.sv
 
 # The name of the top-level module in your Verilog
-TOPLEVEL = simple_adder
+TOPLEVEL = top_tb
 
 # The name of the Python test file (without .py)
 # MODULE = test_my_design
