@@ -7,6 +7,8 @@ requires-python = ">=3.12"
 dependencies = [
     "avl-core>=0.5.0",
     "cocotb>=2.0.1",
+    "cocotb-test>=0.2.6",
+    "pytest>=9.0.2",
 ]
 
 [dependency-groups]
