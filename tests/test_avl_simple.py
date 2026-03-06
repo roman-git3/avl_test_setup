@@ -1,18 +1,35 @@
 import cocotb
 from cocotb.triggers import Timer
-from collections import namedtuple
 
-from avl import Env, Driver, Monitor, Scoreboard, Transaction, List
-
-# Simple namedtuple for stimulus (not compared by scoreboard)
-AdderStim = namedtuple('AdderStim', ['a', 'b'])
+from avl import Env, Driver, Monitor, Scoreboard, Transaction, List, Uint8, Uint
 
 
 class AdderTransaction(Transaction):
-    """Carries the adder result; used for scoreboard comparison."""
     def __init__(self, name, parent):
         super().__init__(name, parent)
-        self.sum = 0
+        self.a   = Uint8(0)                   # 8-bit input — randomized
+        self.b   = Uint8(0)                   # 8-bit input — randomized
+        self.sum = Uint(0, width=9, auto_random=False)  # 9-bit output — predicted, not randomized
+        # inputs are stimulus only — exclude from scoreboard comparison
+        self.set_field_attributes("a", compare=False)
+        self.set_field_attributes("b", compare=False)
+
+
+class SimpleAdderScoreboard(Scoreboard):
+    async def run_phase(self):
+        while True:
+            self.before_item = await self.before_port.blocking_pop()
+            self.after_item  = await self.after_port.blocking_pop()
+
+            # predict expected sum from stimulus fields
+            self.before_item.sum.value = (
+                self.before_item.a.value + self.before_item.b.value
+            )
+
+            self.before_item.compare(self.after_item, verbose=self.verbose, bidirectional=True)
+            self.compare_count += 1
+            self.before_item = None
+            self.after_item  = None
 
 
 class SimpleAdderDriver(Driver):
@@ -24,11 +41,11 @@ class SimpleAdderDriver(Driver):
     async def run_phase(self):
         while True:
             item = await self.seq_item_port.blocking_pop()
-            self.debug(f"Driving: a={item.a}, b={item.b}")
-            self.dut.a.value = item.a
-            self.dut.b.value = item.b
+            self.debug(f"Driving: a={item.a.value}, b={item.b.value}")
+            self.dut.a.value = item.a.value
+            self.dut.b.value = item.b.value
             await Timer(1, unit="ns")  # let combinational logic settle
-            self.trigger.append(True)   # notify monitor to sample
+            self.trigger.append(True)  # notify monitor to sample
 
 
 class SimpleAdderMonitor(Monitor):
@@ -41,8 +58,8 @@ class SimpleAdderMonitor(Monitor):
         while True:
             await self.trigger.blocking_pop()
             t = AdderTransaction("adder_txn", None)
-            t.sum = int(self.dut.sum.value)
-            self.debug(f"Observed: sum={t.sum}")
+            t.sum.value = int(self.dut.sum.value)
+            self.debug(f"Observed: sum={t.sum.value}")
             self.item_export.write(t)
 
 
@@ -52,9 +69,10 @@ class SimpleAdderTB(Env):
         self.dut = dut
         self._trigger_ = List()
 
-        self.driver = SimpleAdderDriver("driver", self, dut, self._trigger_)
-        self.monitor = SimpleAdderMonitor("monitor", self, dut, self._trigger_)
-        self.scoreboard = Scoreboard("scoreboard", self)
+        self.driver     = SimpleAdderDriver("driver", self, dut, self._trigger_)
+        self.monitor    = SimpleAdderMonitor("monitor", self, dut, self._trigger_)
+        self.scoreboard = SimpleAdderScoreboard("scoreboard", self)
+        self.scoreboard.set_min_compare_count(3)
 
         # connect monitor output to scoreboard actual-results port
         self.monitor.item_export.connect(self.scoreboard.after_port)
@@ -62,14 +80,14 @@ class SimpleAdderTB(Env):
     async def run_phase(self):
         self.raise_objection()
 
-        for a_val, b_val in [(1, 2), (5, 7), (255, 1)]:
-            # push expected result to scoreboard before driving
-            expected = AdderTransaction("adder_txn", None)
-            expected.sum = a_val + b_val
-            self.scoreboard.before_port.append(expected)
+        for _ in range(15):
+            stim = AdderTransaction("adder_txn", None)
+            stim.randomize()  # randomizes a and b; sum is auto_random=False
+            self.debug(f"Randomized stimulus: a={stim.a.value}, b={stim.b.value}")
 
-            # push stimulus to driver
-            self.driver.seq_item_port.append(AdderStim(a=a_val, b=b_val))
+            # stim goes to scoreboard (for prediction) and driver (for DUT)
+            self.scoreboard.before_port.append(stim)
+            self.driver.seq_item_port.append(stim)
 
             await Timer(10, unit="ns")
 
@@ -82,6 +100,4 @@ class SimpleAdderTB(Env):
 async def avl_style_test(dut):
     tb = SimpleAdderTB("tb", None, dut)
     await tb.start()
-    assert tb.scoreboard.compare_count >= 3, \
-        f"Expected at least 3 comparisons, got {tb.scoreboard.compare_count}"
     dut._log.info("AVL-style test completed")
